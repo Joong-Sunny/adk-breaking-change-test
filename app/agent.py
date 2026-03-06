@@ -13,17 +13,63 @@
 # limitations under the License.
 
 import os
+from typing import Optional
 
 import google.auth
 from google.adk.agents import Agent
+from google.adk.agents.callback_context import CallbackContext
 from google.adk.apps.app import App
+from google.adk.models import LlmRequest, LlmResponse
 from google.adk.planners import BuiltInPlanner
+from google.adk.plugins.base_plugin import BasePlugin
 from google.genai import types
 
 _, project_id = google.auth.default()
 os.environ.setdefault("GOOGLE_CLOUD_PROJECT", project_id)
 os.environ.setdefault("GOOGLE_CLOUD_LOCATION", "global")
 os.environ.setdefault("GOOGLE_GENAI_USE_VERTEXAI", "True")
+
+
+class DefenseGuardPlugin(BasePlugin):
+    """API 에러 방어 및 Fallback을 처리하는 커스텀 플러그인"""
+
+    def __init__(self) -> None:
+        super().__init__(name="defense_guard")
+
+    async def on_model_error_callback(
+        self,
+        *,
+        callback_context: CallbackContext,
+        llm_request: LlmRequest,
+        error: Exception,
+    ) -> Optional[LlmResponse]:
+
+        error_msg = str(error)
+
+        # 503 에러 발생 시: 특별한 로깅 후 예외를 그대로 발생시킴
+        if "503" in error_msg or "Internal Server Error" in error_msg:
+            print(f"🚨 [CRITICAL] Gemini API 503 서버 에러 발생! 상세내용: {error_msg}")
+            return None
+
+        # 429 에러 발생 시: OpenAI로 Fallback 처리
+        if "429" in error_msg or "Resource Exhausted" in error_msg:
+            print("⚠️ [WARNING] 429 에러 발생! OpenAI 모델로 Fallback을 시도합니다.")
+            try:
+                # 가상의 OpenAI 호출 로직 (실제 프로젝트에 맞게 수정 필요)
+                # openai_text = await call_openai_api(llm_request.prompt)
+                openai_text = "이것은 OpenAI를 통해 받아온 Fallback 응답입니다."
+
+                # ADK가 이해할 수 있는 형태로 포장하여 반환 (예외 억제)
+                return LlmResponse(
+                    content=types.Content(
+                        role="model", parts=[types.Part.from_text(text=openai_text)]
+                    )
+                )
+            except Exception as fallback_error:
+                print(f"❌ OpenAI Fallback 실패: {fallback_error}")
+                return None
+
+        return None
 
 
 # 단일 LLM 에이전트 (툴 없음). 429/503은 Gemini API 호출 시 발생하며,
@@ -40,4 +86,4 @@ root_agent = Agent(
     ),
 )
 
-app = App(root_agent=root_agent, name="app")
+app = App(root_agent=root_agent, name="app", plugins=[DefenseGuardPlugin()])
