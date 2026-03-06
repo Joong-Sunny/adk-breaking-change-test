@@ -20,50 +20,54 @@ import google.auth
 from google.adk.agents import Agent
 from google.adk.apps.app import App
 
+from .agent_simulator_setup import (
+    create_error_simulator_config,
+    create_simulator_callback,
+)
+
 _, project_id = google.auth.default()
 os.environ.setdefault("GOOGLE_CLOUD_PROJECT", project_id)
 os.environ.setdefault("GOOGLE_CLOUD_LOCATION", "global")
 os.environ.setdefault("GOOGLE_GENAI_USE_VERTEXAI", "True")
 
 
-def get_weather(query: str) -> str:
-    """Simulates a web search. Use it get information on weather.
+# 429/503 에러 처리 가이드라인 (LLM instruction)
+ERROR_HANDLING_INSTRUCTION = """
 
-    Args:
-        query: A string containing the location to get weather information for.
-
-    Returns:
-        A string with the simulated weather information for the queried location.
-    """
-    if "sf" in query.lower() or "san francisco" in query.lower():
-        return "It's 60 degrees and foggy."
-    return "It's 90 degrees and sunny."
+When a tool returns an error response with error_code and error_message:
+- **429 (Resource Exhausted)**: Inform the user that the service is rate-limited. Suggest waiting a moment and retrying. Be polite and helpful.
+- **503 (Service Unavailable)**: Inform the user that the service is temporarily overloaded. Suggest trying again in a few minutes.
+- For both cases: Do not panic, provide a clear explanation, and offer actionable next steps.
+"""
 
 
-def get_current_time(query: str) -> str:
-    """Simulates getting the current time for a city.
+def _build_root_agent():
+    """root_agent 생성. ENABLE_ERROR_SIMULATOR=true 시 429/503 모킹 활성화."""
+    use_simulator = os.environ.get("ENABLE_ERROR_SIMULATOR", "").lower() in (
+        "1",
+        "true",
+        "yes",
+    )
 
-    Args:
-        city: The name of the city to get the current time for.
+    agent_kwargs = dict(
+        name="root_agent",
+        model="gemini-2.5-flash",
+        instruction=(
+            "학생이 어려워하는 영어질문에 대해서 친절히 알려주는 영어튜터 선생님. 학생이 어려워하는 부분을 정확히 파악하고 2~3문장 수준으로 가이드 해주세요"
+            + ERROR_HANDLING_INSTRUCTION
+        ),
+    )
 
-    Returns:
-        A string with the current time information.
-    """
-    if "sf" in query.lower() or "san francisco" in query.lower():
-        tz_identifier = "America/Los_Angeles"
-    else:
-        return f"Sorry, I don't have timezone information for query: {query}."
+    if use_simulator:
+        config = create_error_simulator_config(
+            enable_429=True,
+            enable_503=True,
+            enable_latency=False,
+        )
+        agent_kwargs["before_tool_callback"] = create_simulator_callback(config)
 
-    tz = ZoneInfo(tz_identifier)
-    now = datetime.datetime.now(tz)
-    return f"The current time for query {query} is {now.strftime('%Y-%m-%d %H:%M:%S %Z%z')}"
+    return Agent(**agent_kwargs)
 
 
-root_agent = Agent(
-    name="root_agent",
-    model="gemini-2.5-flash",
-    instruction="You are a helpful AI assistant designed to provide accurate and useful information.",
-    tools=[get_weather, get_current_time],
-)
-
+root_agent = _build_root_agent()
 app = App(root_agent=root_agent, name="app")
