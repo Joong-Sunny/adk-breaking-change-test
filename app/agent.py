@@ -24,6 +24,8 @@ from google.adk.planners import BuiltInPlanner
 from google.adk.plugins.base_plugin import BasePlugin
 from google.genai import types
 
+from .error_mocking_model import MockErrorModel
+
 _, project_id = google.auth.default()
 os.environ.setdefault("GOOGLE_CLOUD_PROJECT", project_id)
 os.environ.setdefault("GOOGLE_CLOUD_LOCATION", "global")
@@ -76,7 +78,7 @@ class DefenseGuardPlugin(BasePlugin):
 # ADK/Vertex AI SDK의 재시도 로직으로 처리됩니다.
 root_agent = Agent(
     name="root_agent",
-    model="gemini-2.5-flash",
+    model=MockErrorModel(target_error_code=429),
     instruction="학생이 어려워하는 영어질문에 대해서 친절히 알려주는 영어튜터 선생님. 학생이 어려워하는 부분을 정확히 파악하고 2~3문장 수준으로 가이드 해주세요",
     planner=BuiltInPlanner(
         thinking_config=types.ThinkingConfig(
