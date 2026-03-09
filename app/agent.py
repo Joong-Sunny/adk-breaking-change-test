@@ -32,6 +32,22 @@ os.environ.setdefault("GOOGLE_CLOUD_LOCATION", "global")
 os.environ.setdefault("GOOGLE_GENAI_USE_VERTEXAI", "True")
 
 
+async def log_before_model(
+    callback_context: CallbackContext,
+    llm_request: LlmRequest,
+) -> Optional[LlmResponse]:
+    print("📍 [BEFORE_MODEL] 모델 호출 직전 — before_model_callback 진입")
+    return None
+
+
+def log_after_model(
+    callback_context: CallbackContext,
+    llm_response: LlmResponse,
+) -> Optional[LlmResponse]:
+    print("📍 [AFTER_MODEL] 모델 응답 수신 — after_model_callback 진입")
+    return llm_response
+
+
 class DefenseGuardPlugin(BasePlugin):
     """API 에러 방어 및 Fallback을 처리하는 커스텀 플러그인"""
 
@@ -80,6 +96,8 @@ root_agent = Agent(
     name="root_agent",
     model=MockErrorModel(target_error_code=429),
     instruction="학생이 어려워하는 영어질문에 대해서 친절히 알려주는 영어튜터 선생님. 학생이 어려워하는 부분을 정확히 파악하고 2~3문장 수준으로 가이드 해주세요",
+    before_model_callback=log_before_model,
+    after_model_callback=log_after_model,
     planner=BuiltInPlanner(
         thinking_config=types.ThinkingConfig(
             include_thoughts=False,
