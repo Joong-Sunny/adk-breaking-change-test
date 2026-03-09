@@ -20,6 +20,7 @@ from google.adk.agents import Agent
 from google.adk.agents.callback_context import CallbackContext
 from google.adk.apps.app import App
 from google.adk.models import LlmRequest, LlmResponse
+from google.adk.models.lite_llm import LiteLlm
 from google.adk.planners import BuiltInPlanner
 from google.adk.plugins.base_plugin import BasePlugin
 from google.genai import types
@@ -30,7 +31,9 @@ _, project_id = google.auth.default()
 os.environ.setdefault("GOOGLE_CLOUD_PROJECT", project_id)
 os.environ.setdefault("GOOGLE_CLOUD_LOCATION", "global")
 os.environ.setdefault("GOOGLE_GENAI_USE_VERTEXAI", "True")
+os.environ.setdefault("OPENAI_API_KEY", os.getenv("OPENAI_API_KEY"))
 
+print("OPENAI_API_KEY", os.getenv("OPENAI_API_KEY"))
 
 async def log_before_model(
     callback_context: CallbackContext,
@@ -73,16 +76,20 @@ class DefenseGuardPlugin(BasePlugin):
         if "429" in error_msg or "Resource Exhausted" in error_msg:
             print("⚠️ [WARNING] 429 에러 발생! OpenAI 모델로 Fallback을 시도합니다.")
             try:
-                # 가상의 OpenAI 호출 로직 (실제 프로젝트에 맞게 수정 필요)
-                # openai_text = await call_openai_api(llm_request.prompt)
-                openai_text = "이것은 OpenAI를 통해 받아온 Fallback 응답입니다."
+                fallback_model = "openai/gpt-4o"
+                openai_model = LiteLlm(model=fallback_model)
+                llm_request.model = fallback_model
 
-                # ADK가 이해할 수 있는 형태로 포장하여 반환 (예외 억제)
-                return LlmResponse(
-                    content=types.Content(
-                        role="model", parts=[types.Part.from_text(text=openai_text)]
-                    )
-                )
+                response = None
+                async for chunk in openai_model.generate_content_async(
+                    llm_request=llm_request, stream=False
+                ):
+                    response = chunk
+
+                print("✅ OpenAI에 최종적으로 들어간 내용", llm_request)
+                print("✅ OpenAI Fallback 응답:", response)
+
+                return response
             except Exception as fallback_error:
                 print(f"❌ OpenAI Fallback 실패: {fallback_error}")
                 return None
