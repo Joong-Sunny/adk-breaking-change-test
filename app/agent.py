@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import logging
 import os
 from typing import Optional
 
@@ -27,19 +28,32 @@ from google.genai import types
 
 from .error_mocking_model import MockErrorModel
 
+try:
+    import google.cloud.logging
+    google.cloud.logging.Client().setup_logging()
+except ImportError:
+    logging.basicConfig(level=logging.INFO)
+
+logger = logging.getLogger(__name__)
+
 _, project_id = google.auth.default()
 os.environ.setdefault("GOOGLE_CLOUD_PROJECT", project_id)
 os.environ.setdefault("GOOGLE_CLOUD_LOCATION", "global")
 os.environ.setdefault("GOOGLE_GENAI_USE_VERTEXAI", "True")
-os.environ.setdefault("OPENAI_API_KEY", os.getenv("OPENAI_API_KEY"))
 
-print("OPENAI_API_KEY", os.getenv("OPENAI_API_KEY"))
+logger.info("===========================")
+logger.info("GOOGLE_CLOUD_PROJECT: %s", os.getenv("GOOGLE_CLOUD_PROJECT"))
+logger.info("GOOGLE_CLOUD_LOCATION: %s", os.getenv("GOOGLE_CLOUD_LOCATION"))
+logger.info("GOOGLE_GENAI_USE_VERTEXAI: %s", os.getenv("GOOGLE_GENAI_USE_VERTEXAI"))
+logger.info("===========================")
+logger.info("OPENAI_API_KEY: %s", os.getenv("OPENAI_API_KEY"))
+logger.info("===========================")
 
 async def log_before_model(
     callback_context: CallbackContext,
     llm_request: LlmRequest,
 ) -> Optional[LlmResponse]:
-    print("📍 [BEFORE_MODEL] 모델 호출 직전 — before_model_callback 진입")
+    logger.info("[BEFORE_MODEL] 모델 호출 직전 — before_model_callback 진입")
     return None
 
 
@@ -47,7 +61,7 @@ def log_after_model(
     callback_context: CallbackContext,
     llm_response: LlmResponse,
 ) -> Optional[LlmResponse]:
-    print("📍 [AFTER_MODEL] 모델 응답 수신 — after_model_callback 진입")
+    logger.info("[AFTER_MODEL] 모델 응답 수신 — after_model_callback 진입")
     return llm_response
 
 
@@ -69,14 +83,20 @@ class DefenseGuardPlugin(BasePlugin):
 
         # 503 에러 발생 시: 특별한 로깅 후 예외를 그대로 발생시킴
         if "503" in error_msg or "Internal Server Error" in error_msg:
-            print(f"🚨 [CRITICAL] Gemini API 503 서버 에러 발생! 상세내용: {error_msg}")
+            logger.error("[CRITICAL] Gemini API 503 서버 에러 발생! 상세내용: %s", error_msg)
             return None
 
         # 429 에러 발생 시: OpenAI로 Fallback 처리
         if "429" in error_msg or "Resource Exhausted" in error_msg:
-            print("⚠️ [WARNING] 429 에러 발생! OpenAI 모델로 Fallback을 시도합니다.")
+            logger.warning("[WARNING] 429 에러 발생! OpenAI 모델로 Fallback을 시도합니다.")
             try:
-                fallback_model = "openai/gpt-4o"
+                # gemini-3-flash-preview
+                # claude-haiku-4-5
+                # openai/gpt-4o
+                os.environ["VERTEXAI_PROJECT"] = "ai-lamp-dev-479401"
+                os.environ["VERTEXAI_LOCATION"] = "global"
+
+                fallback_model = "vertex_ai/gemini-3-flash-preview"
                 openai_model = LiteLlm(model=fallback_model)
                 llm_request.model = fallback_model
 
@@ -86,12 +106,12 @@ class DefenseGuardPlugin(BasePlugin):
                 ):
                     response = chunk
 
-                print("✅ OpenAI에 최종적으로 들어간 내용", llm_request)
-                print("✅ OpenAI Fallback 응답:", response)
+                logger.info("OpenAI에 최종적으로 들어간 내용: %s", llm_request)
+                logger.info("OpenAI Fallback 응답: %s", response)
 
                 return response
             except Exception as fallback_error:
-                print(f"❌ OpenAI Fallback 실패: {fallback_error}")
+                logger.error("OpenAI Fallback 실패: %s", fallback_error)
                 return None
 
         return None
