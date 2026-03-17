@@ -14,6 +14,8 @@
 
 import logging
 import os
+import sys
+import time
 from typing import Optional
 
 import google.auth
@@ -29,8 +31,13 @@ from google.genai import types
 from .error_mocking_model import MockErrorModel
 
 try:
-    import google.cloud.logging
-    google.cloud.logging.Client().setup_logging()
+    # StructuredLogHandler: stdout에 JSON 출력 → Agent Engine이 Cloud Logging으로 라우팅
+    # CloudLoggingHandler(setup_logging) 대신 사용 — 쓰레드 문제 없음
+    from google.cloud.logging_v2.handlers import StructuredLogHandler
+
+    _handler = StructuredLogHandler()
+    logging.root.setLevel(logging.INFO)
+    logging.root.addHandler(_handler)
 except ImportError:
     logging.basicConfig(level=logging.INFO)
 
@@ -47,13 +54,14 @@ logger.info("GOOGLE_CLOUD_LOCATION: %s", os.getenv("GOOGLE_CLOUD_LOCATION"))
 logger.info("GOOGLE_GENAI_USE_VERTEXAI: %s", os.getenv("GOOGLE_GENAI_USE_VERTEXAI"))
 logger.info("===========================")
 logger.info("OPENAI_API_KEY: %s", os.getenv("OPENAI_API_KEY"))
+logger.info("GEMINI_API_KEY: %s", os.getenv("GEMINI_API_KEY"))
 logger.info("===========================")
 
 async def log_before_model(
     callback_context: CallbackContext,
     llm_request: LlmRequest,
 ) -> Optional[LlmResponse]:
-    logger.info("[BEFORE_MODEL] 모델 호출 직전 — before_model_callback 진입")
+    print("[BEFORE_MODEL] 모델 호출 직전 — before_model_callback 진입", file=sys.stdout)
     return None
 
 
@@ -84,34 +92,88 @@ class DefenseGuardPlugin(BasePlugin):
         # 503 에러 발생 시: 특별한 로깅 후 예외를 그대로 발생시킴
         if "503" in error_msg or "Internal Server Error" in error_msg:
             logger.error("[CRITICAL] Gemini API 503 서버 에러 발생! 상세내용: %s", error_msg)
+            print("[error] 503 에러발생, 기존 에러 그대로 전파", error_msg)
             return None
 
-        # 429 에러 발생 시: OpenAI로 Fallback 처리
+        # 429 에러 발생 시: Fallback 처리
+        # 순서: AI Studio gemini-2.5-flash → Vertex AI gemini-3-flash-preview → OpenAI gpt-4o
         if "429" in error_msg or "Resource Exhausted" in error_msg:
-            logger.warning("[WARNING] 429 에러 발생! OpenAI 모델로 Fallback을 시도합니다.")
-            try:
-                # gemini-3-flash-preview
-                # claude-haiku-4-5
-                # openai/gpt-4o
-                os.environ["VERTEXAI_PROJECT"] = "ai-lamp-dev-479401"
-                os.environ["VERTEXAI_LOCATION"] = "global"
+            logger.warning("[WARNING] 429 에러 발생! 다른 모델로 시도합니다.")
+            print("[warning] 429 에러발생, fallback 시도")
 
-                fallback_model = "vertex_ai/gemini-3-flash-preview"
-                openai_model = LiteLlm(model=fallback_model)
-                llm_request.model = fallback_model
+            # fallback 1: Google AI Studio gemini-2.5-flash (Vertex AI와 완전히 독립된 인프라)
+            try:
+                fallback1_model = "gemini/gemini-2.5-flash"
+                fallback1 = LiteLlm(model=fallback1_model)
+                llm_request.model = fallback1_model
 
                 response = None
-                async for chunk in openai_model.generate_content_async(
+                _t1 = time.time()
+                print("[warning] fallback 1차시도: AI Studio gemini-2.5-flash")
+                async for chunk in fallback1.generate_content_async(
                     llm_request=llm_request, stream=False
                 ):
                     response = chunk
-
-                logger.info("OpenAI에 최종적으로 들어간 내용: %s", llm_request)
-                logger.info("OpenAI Fallback 응답: %s", response)
-
+                print(
+                    f"[warning] fallback 1차 성공: AI Studio gemini-2.5-flash ({time.time() - _t1:.2f}s)"
+                )
                 return response
-            except Exception as fallback_error:
-                logger.error("OpenAI Fallback 실패: %s", fallback_error)
+            except Exception as fallback1_error:
+                print(
+                    f"[error] AI Studio gemini-2.5-flash 시도 실패 ({time.time() - _t1:.2f}s): {fallback1_error}"
+                )
+                logger.error(
+                    "[error] AI Studio gemini-2.5-flash 시도 실패: %s", fallback1_error
+                )
+
+            # fallback 2: Vertex AI gemini-3-flash-preview (다른 모델, 별도 수요 풀)
+            try:
+                fallback2_model = "vertex_ai/gemini-3-flash-preview"
+                fallback2 = LiteLlm(model=fallback2_model)
+                llm_request.model = fallback2_model
+
+                response = None
+                _t2 = time.time()
+                print("[warning] fallback 2차 시도: Vertex AI gemini-3-flash-preview")
+                async for chunk in fallback2.generate_content_async(
+                    llm_request=llm_request, stream=False
+                ):
+                    response = chunk
+                print(
+                    f"[warning] fallback 2차 성공: Vertex AI gemini-3-flash-preview ({time.time() - _t2:.2f}s)"
+                )
+                return response
+            except Exception as fallback2_error:
+                print(
+                    f"[error] Vertex AI gemini-3-flash-preview 시도 실패 ({time.time() - _t2:.2f}s): {fallback2_error}"
+                )
+                logger.error(
+                    "[error] Vertex AI gemini-3-flash-preview 시도 실패: %s",
+                    fallback2_error,
+                )
+
+            # fallback 3: OpenAI gpt-4o (완전히 다른 제공자)
+            try:
+                fallback3_model = "openai/gpt-4o"
+                fallback3 = LiteLlm(model=fallback3_model)
+                llm_request.model = fallback3_model
+
+                response = None
+                _t3 = time.time()
+                print("[warning] fallback 3 시도: OpenAI gpt-4o")
+                async for chunk in fallback3.generate_content_async(
+                    llm_request=llm_request, stream=False
+                ):
+                    response = chunk
+                print(
+                    f"[warning] fallback 3 성공: OpenAI gpt-4o ({time.time() - _t3:.2f}s)"
+                )
+                return response
+            except Exception as fallback3_error:
+                print(
+                    f"[error] OpenAI gpt-4o 시도 실패 ({time.time() - _t3:.2f}s): {fallback3_error}"
+                )
+                logger.error("[error] OpenAI gpt-4o 시도 실패: %s", fallback3_error)
                 return None
 
         return None
