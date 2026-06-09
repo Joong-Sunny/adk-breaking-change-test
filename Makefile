@@ -35,7 +35,12 @@ deploy:
 		--source-packages=./app \
 		--entrypoint-module=app.agent_engine_app \
 		--entrypoint-object=agent_engine \
-		--requirements-file=app/app_utils/.requirements.txt
+		--requirements-file=app/app_utils/.requirements.txt \
+		--project=ai-lamp-stg-479401 \
+		--location=asia-northeast3 \
+		--service-account=deploy-agent-engine-lamp-stg@ai-lamp-stg-479401.iam.gserviceaccount.com \
+		--set-env-vars "OPENAI_API_KEY=$$OPENAI_API_KEY,GEMINI_API_KEY=$$GEMINI_API_KEY,LOGS_BUCKET_NAME=sunny-good-agent-logs,OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=true" \
+
 
 # Alias for 'make deploy' for backward compatibility
 backend: deploy

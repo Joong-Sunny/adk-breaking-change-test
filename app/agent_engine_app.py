@@ -13,18 +13,17 @@
 # limitations under the License.
 
 # mypy: disable-error-code="attr-defined,arg-type"
-import logging
 import os
 from typing import Any
 
+import google.cloud.logging
 import vertexai
-from google.adk.artifacts import GcsArtifactService, InMemoryArtifactService
-from google.cloud import logging as google_cloud_logging
-from vertexai.agent_engines.templates.adk import AdkApp
-
 from app.agent import app as adk_app
 from app.app_utils.telemetry import setup_telemetry
 from app.app_utils.typing import Feedback
+from google.adk.artifacts import GcsArtifactService, InMemoryArtifactService
+from google.cloud import logging as google_cloud_logging
+from vertexai.agent_engines.templates.adk import AdkApp
 
 
 class AgentEngineApp(AdkApp):
@@ -33,9 +32,26 @@ class AgentEngineApp(AdkApp):
         vertexai.init()
         setup_telemetry()
         super().set_up()
-        logging.basicConfig(level=logging.INFO)
-        logging_client = google_cloud_logging.Client()
-        self.logger = logging_client.logger(__name__)
+
+        project_id = os.environ.get("GOOGLE_CLOUD_PROJECT", "ai-lamp-dev-479401")
+        location = os.environ.get("GOOGLE_CLOUD_LOCATION", "asia-northeast3")
+        # GOOGLE_CLOUD_AGENT_ENGINE_ID 는 Agent Engine이 런타임에 자동 주입하는 예약 변수
+        # 로컬 실행 시엔 없을 수 있으므로 빈 문자열로 fallback
+        agent_engine_id = os.environ.get("GOOGLE_CLOUD_AGENT_ENGINE_ID", "")
+
+        logging_client = google_cloud_logging.Client(project=project_id)
+        # resource를 지정해야 Agent Engine 로그 탐색기에서 올바르게 조회됨
+        self.logger = logging_client.logger(
+            name="agent_engine_app",
+            resource=google.cloud.logging.Resource(
+                type="aiplatform.googleapis.com/ReasoningEngine",
+                labels={
+                    "location": location,
+                    "resource_container": project_id,
+                    "reasoning_engine_id": agent_engine_id,
+                },
+            ),
+        )
         if gemini_location:
             os.environ["GOOGLE_CLOUD_LOCATION"] = gemini_location
 

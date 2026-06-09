@@ -18,6 +18,7 @@ import importlib
 import inspect
 import json
 import logging
+import subprocess
 import warnings
 from typing import Any
 
@@ -80,6 +81,54 @@ def write_deployment_metadata(
         json.dump(metadata, f, indent=2)
 
     logging.info(f"Agent Engine ID written to {metadata_file}")
+
+
+def ensure_logging_iam_binding(project: str, project_number: str) -> None:
+    """Reasoning Engine 서비스 에이전트에 Cloud Logging/Trace 쓰기 권한을 부여합니다.
+
+    Agent Engine의 실제 런타임 SA:
+      service-PROJECT_NUMBER@gcp-sa-aiplatform-re.iam.gserviceaccount.com
+
+    이 SA는 deploy SA(deploy-agent-engine-lamp-dev@...)와 다르며,
+    GCP가 첫 Agent Engine 배포 시 자동으로 생성합니다.
+    기본적으로 logging.logWriter 가 없어 StructuredLogHandler 외의
+    Cloud Logging 직접 API 호출 로그가 기록되지 않습니다.
+
+    NOTE: gcloud add-iam-policy-binding 은 idempotent 명령어입니다.
+    이미 바인딩이 존재해도 returncode=0 을 반환하므로, returncode != 0 은
+    '이미 설정됨'이 아니라 진짜 실패(권한 부족 등)를 의미합니다.
+    """
+    # gcp-sa-aiplatform-re: Reasoning Engine(Agent Engine) 전용 서비스 에이전트
+    # gcp-sa-aiplatform (일반 Vertex AI SA)과 다른 별개의 SA임
+    runtime_sa = f"service-{project_number}@gcp-sa-aiplatform-re.iam.gserviceaccount.com"
+
+    roles_to_grant = [
+        "roles/logging.logWriter",   # Cloud Logging 직접 API 호출 (self.logger.log_struct 등)
+        "roles/cloudtrace.agent",    # OpenTelemetry 트레이스 전송
+    ]
+
+    for role in roles_to_grant:
+        result = subprocess.run(
+            [
+                "gcloud", "projects", "add-iam-policy-binding", project,
+                f"--member=serviceAccount:{runtime_sa}",
+                f"--role={role}",
+                "--condition=None",
+            ],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            print(f"✅ {role} 부여 완료 → {runtime_sa}")
+        else:
+            logging.error(
+                "❌ %s 바인딩 실패! "
+                "배포된 에이전트에서 Cloud Logging/Trace가 동작하지 않을 수 있습니다. "
+                "배포 실행 계정에 resourcemanager.projects.setIamPolicy 권한이 있는지 확인하세요. "
+                "오류 내용: %s",
+                role,
+                result.stderr.strip(),
+            )
 
 
 def print_deployment_success(
@@ -330,6 +379,12 @@ def deploy_agent_engine_app(
 
     write_deployment_metadata(remote_agent)
     print_deployment_success(remote_agent, location, project)
+
+    # 런타임 SA에 Cloud Logging 권한 자동 부여
+    # GOOGLE_CLOUD_AGENT_ENGINE_ID 는 예약 prefix 라 직접 설정 불가 — Agent Engine이 런타임에 자동 주입
+    resource_name_parts = remote_agent.api_resource.name.split("/")
+    project_number = resource_name_parts[1]
+    ensure_logging_iam_binding(project, project_number)
 
     return remote_agent
 

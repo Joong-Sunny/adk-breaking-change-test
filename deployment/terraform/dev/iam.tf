@@ -57,7 +57,8 @@ resource "google_project_iam_member" "app_sa_roles" {
 }
 
 
-# Grant required permissions to Vertex AI service account for Agent Engine
+# Grant required permissions to Vertex AI service account (gcp-sa-aiplatform)
+# NOTE: 이 SA는 일반 Vertex AI 서비스 에이전트이며 Agent Engine 런타임 SA와 다릅니다.
 resource "google_project_iam_member" "vertex_ai_sa_permissions" {
   for_each = {
     for pair in setproduct(keys(local.project_ids), var.app_sa_roles) :
@@ -67,6 +68,26 @@ resource "google_project_iam_member" "vertex_ai_sa_permissions" {
   project = var.dev_project_id
   role    = each.value
   member  = google_project_service_identity.vertex_sa.member
+  depends_on = [resource.google_project_service.services]
+}
+
+
+# Grant required permissions to Reasoning Engine (Agent Engine) service agent
+# (gcp-sa-aiplatform-re) — deploy SA와 다른 GCP 관리 런타임 SA
+#
+# 이 SA는 Agent Engine 첫 배포 시 GCP가 자동 생성합니다.
+# 만약 terraform apply 시 "member not found" 에러가 나면:
+#   1. 먼저 make deploy 로 에이전트를 한 번 배포하여 SA 생성
+#   2. 이후 make setup-dev-env 로 terraform apply 재실행
+resource "google_project_iam_member" "reasoning_engine_sa_roles" {
+  for_each = toset([
+    "roles/logging.logWriter",  # Cloud Logging 직접 API 호출 (StructuredLogHandler stdout 외)
+    "roles/cloudtrace.agent",   # OpenTelemetry 트레이스 전송
+  ])
+
+  project    = var.dev_project_id
+  role       = each.value
+  member     = "serviceAccount:service-${data.google_project.dev_project.number}@gcp-sa-aiplatform-re.iam.gserviceaccount.com"
   depends_on = [resource.google_project_service.services]
 }
 
